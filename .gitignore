@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtualenv
+.venv/
+venv/
+env/
+.env*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright
+auth.json
+
+# Data / outputs
+/data/
+*.xlsx
+*.csv
