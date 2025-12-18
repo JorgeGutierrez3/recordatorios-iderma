@@ -12,25 +12,41 @@ from playwright.async_api import async_playwright
 print(">>> SCRIPT CARGADO <<<", flush=True)
 
 # ======================================================
-# LOCALE (NO DEPENDER DE ESTO PARA DIAS/MESES)
+# ENV
+# ======================================================
+def _require_env(name: str) -> str:
+    val = os.getenv(name, "").strip()
+    if not val:
+        raise RuntimeError(f"Falta variable de entorno: {name}")
+    return val
+
+IDERM_USER = _require_env("IDERM_USER")
+IDERM_PASS = _require_env("IDERM_PASS")
+
+RESPONDIO_TOKENS = {
+    "sabino": _require_env("RESPONDIO_TOKEN_SABINO"),
+    "bori":   _require_env("RESPONDIO_TOKEN_BORI"),
+    "cdc":    _require_env("RESPONDIO_TOKEN_CDC"),
+    "rey":    _require_env("RESPONDIO_TOKEN_REY"),
+}
+
+# ======================================================
+# LOCALE (NO DEPENDER DE ESTO)
 # ======================================================
 try:
     locale.setlocale(locale.LC_TIME, "es_ES.UTF-8")
 except locale.Error:
     pass
 
-# ======================================================
-# LISTAS ESPAÑOL (NO DEPENDEN DEL LOCALE)
-# ======================================================
-DIAS_ES = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+DIAS_ES = ["lunes","martes","miercoles","jueves","viernes","sabado","domingo"]
 MESES_ES = [
-    "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+    "enero","febrero","marzo","abril","mayo","junio",
+    "julio","agosto","septiembre","octubre","noviembre","diciembre"
 ]
-MESES_ABR_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+MESES_ABR_ES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
 
 # ======================================================
-# RUTAS DOCKER
+# PATHS (DOCKER)
 # ======================================================
 BASE_DIR = Path("/data")
 BASE_DIR.mkdir(exist_ok=True)
@@ -41,24 +57,11 @@ CSV_BASE = BASE_DIR / "CSV" / "Iderma"
 (CSV_BASE / "Bori").mkdir(parents=True, exist_ok=True)
 
 # ======================================================
-# RESPOND.IO (INTEGRADO 100% - MISMA LÓGICA)
+# RESPOND.IO
 # ======================================================
 BASE_URL = "https://api.respond.io/v2"
 
-def _require_env(name: str) -> str:
-    val = os.getenv(name, "").strip()
-    if not val:
-        raise RuntimeError(f"Falta variable de entorno: {name}")
-    return val
-
-TOKENS = {
-    "sabino": _require_env("RESPONDIO_TOKEN_SABINO"),
-    "bori":   _require_env("RESPONDIO_TOKEN_BORI"),
-    "cdc":    _require_env("RESPONDIO_TOKEN_CDC"),
-    "rey":    _require_env("RESPONDIO_TOKEN_REY"),
-}
-
-def authenticate(token: str) -> dict:
+def authenticate(token):
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -69,38 +72,31 @@ def convertir_fecha_iso(raw):
     if not raw or str(raw).strip() == "":
         return ""
     try:
-        dt = datetime.strptime(raw, "%m/%d/%y")
-        return dt.strftime("%Y-%m-%d")
+        return datetime.strptime(raw, "%m/%d/%y").strftime("%Y-%m-%d")
     except:
         return ""
 
-async def get_contact(session: aiohttp.ClientSession, phone: str):
+async def get_contact(session, phone):
     url = f"{BASE_URL}/contact/phone:{phone}"
     async with session.get(url) as r:
         if r.status == 200:
             return await r.json()
         if r.status == 404:
             return None
-        return {"error": r.status, "detail": await r.text()}
+        return {"error": r.status}
 
-async def create_contact(session: aiohttp.ClientSession, payload: dict):
+async def create_contact(session, payload):
     phone = payload["phone"]
     url = f"{BASE_URL}/contact/phone:{phone}"
     async with session.post(url, json=payload) as r:
-        text = await r.text()
-        if r.status in (200, 201):
-            return await r.json()
-        return {"error": r.status, "detail": text}
+        return r.status
 
-async def update_contact(session: aiohttp.ClientSession, phone: str, payload: dict):
+async def update_contact(session, phone, payload):
     url = f"{BASE_URL}/contact/phone:{phone}"
     async with session.put(url, json=payload) as r:
-        text = await r.text()
-        if r.status == 200:
-            return await r.json()
-        return {"error": r.status, "detail": text}
+        return r.status
 
-async def upsert_contact(session: aiohttp.ClientSession, payload: dict):
+async def upsert_contact(session, payload):
     phone = payload["phone"]
     exists = await get_contact(session, phone)
     if exists is None:
@@ -108,69 +104,32 @@ async def upsert_contact(session: aiohttp.ClientSession, payload: dict):
     else:
         return await update_contact(session, phone, payload)
 
-def convertir_row_a_payload(row: pd.Series) -> dict:
-    phone = str(row["Phone Number"]).strip()
-    fecha_iso = convertir_fecha_iso(row["Fecha Num"])
-    location = str(row["Location"]).strip()
-
+def convertir_row_a_payload(row):
     return {
         "firstName": str(row["First Name"]).strip(),
-        "phone": phone,
+        "phone": str(row["Phone Number"]).strip(),
         "custom_fields": [
-            {"name": "fecha_cita", "value": fecha_iso},
+            {"name": "fecha_cita", "value": convertir_fecha_iso(row["Fecha Num"])},
             {"name": "fecha_larga", "value": str(row["Fecha Text"]).strip()},
             {"name": "hora_cita", "value": str(row["Hora"]).strip()},
             {"name": "nombre_doctor", "value": str(row["Doctor"]).strip()},
-            {"name": "location", "value": location},
+            {"name": "location", "value": str(row["Location"]).strip()},
         ]
     }
 
-async def subir_contacto(payload: dict, session: aiohttp.ClientSession) -> dict:
-    res = await upsert_contact(session, payload)
-    if isinstance(res, dict) and "error" in res:
-        return {
-            "status": "error",
-            "phone": payload["phone"],
-            "error": res["error"],
-            "detail": res["detail"]
-        }
-    return {"status": "ok", "phone": payload["phone"]}
-
-# ===============================================================
-#     NUEVA FUNCIÓN — ACTUALIZAR id_pac A TODOS LOS CONTACTOS
-# ===============================================================
 async def actualizar_id_pac_en_batch(phones, workspace, concurrencia=5):
-    token = TOKENS.get(workspace.lower())
-    if not token:
-        raise ValueError(f"Workspace inválido: {workspace}")
-
+    print("\nEjecutando actualización id_pac...\n")
+    token = RESPONDIO_TOKENS[workspace]
     headers = authenticate(token)
     sem = asyncio.Semaphore(concurrencia)
 
-    payload_idpac = {
-        "custom_fields": [
-            {"name": "id_pac", "value": 88}
-        ]
-    }
-
-    results_ok = []
-    results_err = []
-
     async with aiohttp.ClientSession(headers=headers) as session:
-
         async def procesar(phone):
             async with sem:
                 url = f"{BASE_URL}/contact/phone:{phone}"
-                async with session.put(url, json=payload_idpac) as r:
-                    text = await r.text()
-                    if r.status == 200:
-                        results_ok.append(phone)
-                    else:
-                        results_err.append({
-                            "phone": phone,
-                            "error": r.status,
-                            "detail": text
-                        })
+                await session.put(url, json={
+                    "custom_fields": [{"name": "id_pac", "value": 88}]
+                })
 
         await asyncio.gather(*(procesar(p) for p in phones))
 
@@ -178,27 +137,11 @@ async def actualizar_id_pac_en_batch(phones, workspace, concurrencia=5):
     print(" ACTUALIZACIÓN id_pac FINALIZADA ")
     print("==============================")
     print(f"Total procesados: {len(phones)}")
-    print(f"Correctos:        {len(results_ok)}")
-    print(f"Errores:          {len(results_err)}")
-
-    if results_err:
-        print("\n--- ERRORES ---")
-        for e in results_err:
-            print(f"{e['phone']} → ERROR {e['error']}")
-            print(f"Detalle: {e['detail']}")
-
     print("==============================\n")
 
-    return {"ok": results_ok, "error": results_err}
-
-# ===============================================================
-#     FUNCIÓN PRINCIPAL — INCLUYE ACTUALIZACIÓN id_pac
-# ===============================================================
-async def subir_contactos_dataframe(df: pd.DataFrame, workspace: str, concurrencia=5):
-    token = TOKENS.get(workspace.lower())
-    if not token:
-        raise ValueError(f"Workspace inválido: {workspace}")
-
+async def subir_contactos_dataframe(df, workspace, concurrencia=5):
+    print(f"\nSubiendo contactos a Respond.io ({workspace})...")
+    token = RESPONDIO_TOKENS[workspace]
     headers = authenticate(token)
     sem = asyncio.Semaphore(concurrencia)
 
@@ -206,17 +149,16 @@ async def subir_contactos_dataframe(df: pd.DataFrame, workspace: str, concurrenc
     results_err = []
 
     async with aiohttp.ClientSession(headers=headers) as session:
-
         async def procesar(row):
             async with sem:
                 payload = convertir_row_a_payload(row)
-                r = await subir_contacto(payload, session)
-                if r["status"] == "ok":
-                    results_ok.append(r["phone"])
+                status = await upsert_contact(session, payload)
+                if status in (200, 201):
+                    results_ok.append(payload["phone"])
                 else:
-                    results_err.append(r)
+                    results_err.append(payload["phone"])
 
-        await asyncio.gather(*(procesar(row) for _, row in df.iterrows()))
+        await asyncio.gather(*(procesar(r) for _, r in df.iterrows()))
 
     print("\n==============================")
     print("        RESUMEN UP SERT")
@@ -224,53 +166,29 @@ async def subir_contactos_dataframe(df: pd.DataFrame, workspace: str, concurrenc
     print(f"Total enviados:  {len(df)}")
     print(f"Correctos:       {len(results_ok)}")
     print(f"Errores:         {len(results_err)}")
-
-    if results_err:
-        print("\n--- ERRORES ---")
-        for e in results_err:
-            print(f"{e['phone']} → ERROR {e['error']}")
-            print(f"Detalle: {e['detail']}")
-
     print("==============================")
 
-    confirmar = input(
-        "\n¿Aplicar actualización id_pac=88 a TODOS los contactos correctos? (s/n): "
-    ).strip().lower()
-
-    if confirmar == "s":
-        print("\nEjecutando actualización id_pac...\n")
+    if results_ok:
         await actualizar_id_pac_en_batch(results_ok, workspace, concurrencia)
-    else:
-        print("\nActualización id_pac cancelada por el usuario.\n")
-
-    return {"ok": results_ok, "error": results_err}
 
 # ======================================================
-# UTILIDADES (TU SCRIPT)
+# UTILIDADES (IGUAL QUE TU SCRIPT)
 # ======================================================
 def limpiar_telefono(t):
     if pd.isna(t):
         return None
-
     t = str(t).strip()
-
     if t.endswith(".0"):
         t = t[:-2]
-
     t = t.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-
     if t.startswith("+"):
         t = t[1:]
-
     if not t.isdigit():
         return None
-
     if len(t) == 11 and t.startswith("34"):
         return "+" + t
-
     if len(t) == 9:
         return "+34" + t
-
     return None
 
 def quitar_tildes(s):
@@ -284,7 +202,6 @@ def quitar_tildes(s):
 def corregir_miercoles(texto):
     if not isinstance(texto, str):
         return texto
-
     texto = quitar_tildes(texto)
     texto = texto.replace("Miércoles", "Miercoles")
     texto = texto.replace("Mierc©rcoles", "Miercoles")
@@ -293,13 +210,13 @@ def corregir_miercoles(texto):
     return texto
 
 # ======================================================
-# LOGIN IDERMA (TU SCRIPT)
+# LOGIN IDERMA
 # ======================================================
-async def login(page, username, password, url):
+async def login(page):
     print("Iniciando sesión...")
-    await page.goto(url)
-    await page.fill("input[name='MAIL']", username)
-    await page.fill("input[name='PWD']", password)
+    await page.goto("https://control.iderma.es/07/LOGIN/default.cfm")
+    await page.fill("input[name='MAIL']", IDERM_USER)
+    await page.fill("input[name='PWD']", IDERM_PASS)
     await page.click("input[type='submit']")
     await page.wait_for_load_state("networkidle")
     print("Sesión iniciada.")
@@ -326,7 +243,7 @@ async def verificar_sesion(page):
     return False
 
 # ======================================================
-# DESCARGA AGENDA (TU SCRIPT)
+# DESCARGAR AGENDA
 # ======================================================
 async def descargar_agenda(page):
     print("Navegando hacia Agenda Programada...")
@@ -374,29 +291,31 @@ async def descargar_agenda(page):
     return ruta, fecha
 
 # ======================================================
-# TRANSFORMACIÓN COMPLETA (TU SCRIPT)
+# TRANSFORMACIÓN COMPLETA
 # ======================================================
-def cargar_auxiliares(ruta_aux: Path):
-    hojas = ["Agenda", "Acto", "Centro", "Doctor", "Direccion"]
+def cargar_auxiliares(ruta_aux):
+    hojas = ["Agenda","Acto","Centro","Doctor","Direccion"]
     return {h: pd.read_excel(ruta_aux, sheet_name=h) for h in hojas}
 
-def aplicar_verificaciones(df: pd.DataFrame, aux: dict):
+def aplicar_verificaciones(df, aux):
     doctor_map = aux["Doctor"].set_index("Dr Codigo")["Nombre Profesional"].to_dict()
     df["Nombre Profesional"] = df["Prof"].map(doctor_map)
 
     direccion_map = aux["Direccion"].set_index("Clinica")["Direccion"].to_dict()
     df["Direccion Centro"] = df["Centro"].map(direccion_map)
 
-    df["Verif1_Agenda"] = df["Estado"].map(aux["Agenda"].set_index("Código")["Enviar confirmación?"]).fillna("No")
+    df["Verif1_Agenda"] = df["Estado"].map(
+        aux["Agenda"].set_index("Código")["Enviar confirmación?"]
+    ).fillna("No")
 
-    acto_df = aux["Acto"].drop_duplicates(subset=["actID"], keep="first")
+    acto_df = aux["Acto"].drop_duplicates(subset=["actID"])
     acto_map = acto_df.set_index("actID")["Enviar confirmación?"].to_dict()
     df["Verif2_Acto"] = df["Acto ID"].map(acto_map).fillna("Si")
 
     centro_map = aux["Centro"].set_index("Centro")["Enviar confirmación?"].to_dict()
     df["Verif3_Centro"] = df["Centro"].map(centro_map).fillna("No")
 
-    df = df.drop_duplicates(subset=["movil"], keep="first").reset_index(drop=True)
+    df = df.drop_duplicates(subset=["movil"]).reset_index(drop=True)
     df["Verif4_Repetido"] = "Si"
 
     hoy = date.today()
@@ -407,60 +326,43 @@ def aplicar_verificaciones(df: pd.DataFrame, aux: dict):
         lambda x: "Si" if pd.to_datetime(x, errors="coerce").date() == mañana else "No"
     )
 
-    df["Usar"] = df[["Verif1_Agenda", "Verif2_Acto", "Verif3_Centro", "Verif4_Repetido", "Verif5_Mañana"]].apply(
-        lambda r: "Si" if all(v == "Si" for v in r) else "No", axis=1
-    )
+    df["Usar"] = df[
+        ["Verif1_Agenda","Verif2_Acto","Verif3_Centro","Verif4_Repetido","Verif5_Mañana"]
+    ].apply(lambda r: "Si" if all(v=="Si" for v in r) else "No", axis=1)
 
     return df
 
 def extraer_fecha_hora_es(valor):
-    if pd.isna(valor) or str(valor).strip() == "":
-        return "", "", ""
+    if pd.isna(valor) or str(valor).strip()=="":
+        return "","",""
 
     dt = pd.to_datetime(str(valor), errors="coerce")
     if pd.isna(dt):
-        return "", "", ""
+        return "","",""
 
     fecha_num = dt.strftime("%m/%d/%y")
-
     dia = DIAS_ES[dt.weekday()]
-    mes = MESES_ES[dt.month - 1]
+    mes = MESES_ES[dt.month-1]
     fecha_text = f"{dia}, {dt.day} de {mes} de {dt.year}".capitalize()
-    fecha_text = quitar_tildes(fecha_text)
-    fecha_text = corregir_miercoles(fecha_text)
-
+    fecha_text = corregir_miercoles(quitar_tildes(fecha_text))
     hora = dt.strftime("%H:%M")
     return fecha_num, fecha_text, hora
 
-def transformar_y_generar_csv(ruta_archivo: Path, fecha_objetivo: date):
-    with open(ruta_archivo, "r", encoding="utf-8", errors="ignore") as f:
+def transformar_y_generar_csv(ruta_archivo, fecha_objetivo):
+    with open(ruta_archivo,"r",encoding="utf-8",errors="ignore") as f:
         html = f.read()
-    df = pd.read_html(StringIO(html), flavor=["lxml", "html5lib"])[0]
+    df = pd.read_html(StringIO(html))[0]
 
-    auxiliares = cargar_auxiliares(AUX_PATH)
-    df_final = aplicar_verificaciones(df, auxiliares)
+    aux = cargar_auxiliares(AUX_PATH)
+    df_final = aplicar_verificaciones(df, aux)
 
     salida_xlsx = BASE_DIR / "agenda_filtrada.xlsx"
     df_final.to_excel(salida_xlsx, index=False)
     print(f"\nArchivo Excel filtrado guardado:\n{salida_xlsx}")
 
-    df_final = df_final[df_final["Usar"] == "Si"].copy()
-
-    vacios = df_final[df_final["Nombre Profesional"].isna()]
-    if not vacios.empty:
-        print("\n❌ ERROR CRÍTICO — DOCTOR VACÍO")
-        print("Códigos problemáticos:", vacios["Prof"].unique())
-        raise SystemExit("Proceso detenido por doctor vacío.")
-
-    # Guardamos originales para log de inválidos (tu código original aquí estaba mal referenciando df)
-    originales_movil = df_final["movil"].copy()
+    df_final = df_final[df_final["Usar"]=="Si"].copy()
 
     df_final["movil"] = df_final["movil"].apply(limpiar_telefono)
-    invalidos = df_final[df_final["movil"].isna()]
-
-    for idx in invalidos.index:
-        print(f"⚠ Teléfono inválido excluido: {originales_movil.loc[idx]}")
-
     df_final = df_final[df_final["movil"].notna()]
 
     base = pd.DataFrame()
@@ -472,26 +374,23 @@ def transformar_y_generar_csv(ruta_archivo: Path, fecha_objetivo: date):
     base["Fecha Text"] = [x[1] for x in fechas]
     base["Hora"] = [x[2] for x in fechas]
 
-    base["Doctor"] = df_final["Nombre Profesional"].apply(lambda x: quitar_tildes(str(x)).replace("Marino", "Mariño"))
+    base["Doctor"] = df_final["Nombre Profesional"].apply(lambda x: quitar_tildes(str(x)))
     base["Location"] = df_final["Direccion Centro"].apply(quitar_tildes)
 
     sabino = base[base["Location"].str.contains("Sabino Arana", case=False, na=False)]
     bori = base[base["Location"].str.contains("Bori i Fontesta", case=False, na=False)]
 
-    abr = MESES_ABR_ES[fecha_objetivo.month - 1]
+    abr = MESES_ABR_ES[fecha_objetivo.month-1]
 
-    ruta_sabino = None
-    ruta_bori = None
+    ruta_sabino = ruta_bori = None
 
     if not sabino.empty:
-        nombre_file = f"Recordatorios Sabino {fecha_objetivo.day} de {abr}.csv"
-        ruta_sabino = CSV_BASE / "Sabino" / nombre_file
+        ruta_sabino = CSV_BASE / "Sabino" / f"Recordatorios Sabino {fecha_objetivo.day} de {abr}.csv"
         sabino.to_csv(ruta_sabino, index=False, encoding="utf-8-sig")
         print(f"\n📍 CSV Sabino guardado: {ruta_sabino}")
 
     if not bori.empty:
-        nombre_file = f"Recordatorios Bori {fecha_objetivo.day} de {abr}.csv"
-        ruta_bori = CSV_BASE / "Bori" / nombre_file
+        ruta_bori = CSV_BASE / "Bori" / f"Recordatorios Bori {fecha_objetivo.day} de {abr}.csv"
         bori.to_csv(ruta_bori, index=False, encoding="utf-8-sig")
         print(f"\n📍 CSV Bori guardado: {ruta_bori}")
 
@@ -502,32 +401,28 @@ def transformar_y_generar_csv(ruta_archivo: Path, fecha_objetivo: date):
 # MAIN
 # ======================================================
 async def main():
-    USER = "alfredo@grupomedsum.com"
-    PASS = "2410.01.kld"
-
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=False,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
+            args=["--no-sandbox","--disable-dev-shm-usage"]
         )
         context = await browser.new_context()
         page = await context.new_page()
 
         sesion_valida = await verificar_sesion(page)
         if not sesion_valida:
-            await login(page, USER, PASS, "https://control.iderma.es/07/LOGIN/default.cfm")
+            await login(page)
 
         ruta_archivo, fecha_objetivo = await descargar_agenda(page)
         await browser.close()
 
     sabino_df, bori_df, _, _ = transformar_y_generar_csv(ruta_archivo, fecha_objetivo)
 
-    # ====== SUBIDA RESPOND.IO (COMO ANTES) ======
     if sabino_df is not None and not sabino_df.empty:
-        await subir_contactos_dataframe(sabino_df, "sabino", concurrencia=5)
+        await subir_contactos_dataframe(sabino_df, "sabino")
 
     if bori_df is not None and not bori_df.empty:
-        await subir_contactos_dataframe(bori_df, "bori", concurrencia=5)
+        await subir_contactos_dataframe(bori_df, "bori")
 
 if __name__ == "__main__":
     asyncio.run(main())
