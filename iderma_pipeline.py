@@ -149,7 +149,7 @@ async def actualizar_id_pac_en_batch(phones, workspace, concurrencia=5):
 
     payload_idpac = {
         "custom_fields": [
-            {"name": "id_pac", "value": 17}
+            {"name": "id_pac", "value": 69}
         ]
     }
 
