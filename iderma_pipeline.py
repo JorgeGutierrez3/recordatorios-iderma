@@ -128,7 +128,7 @@ async def actualizar_id_pac_en_batch(phones, workspace, concurrencia=5):
             async with sem:
                 url = f"{BASE_URL}/contact/phone:{phone}"
                 await session.put(url, json={
-                    "custom_fields": [{"name": "id_pac", "value": 88}]
+                    "custom_fields": [{"name": "id_pac", "value": 11}]
                 })
 
         await asyncio.gather(*(procesar(p) for p in phones))
