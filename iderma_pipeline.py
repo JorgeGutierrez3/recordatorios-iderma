@@ -509,48 +509,125 @@ def transformar_y_generar_csv(ruta_archivo: Path, fecha_objetivo: date):
 # MAIN
 # ======================================================
 async def main():
+    import os
+    from pathlib import Path
+
+    print(">>> MAIN ARRANCADO <<<", flush=True)
+
+    # =========================
+    # CREDENCIALES DESDE .env
+    # =========================
+    USER = os.getenv("IDERM_USER")
+    PASS = os.getenv("IDERM_PASS")
+
+    if not USER or not PASS:
+        raise RuntimeError("Faltan IDERM_USER o IDERM_PASS en el .env")
+
+    AUTH_PATH = Path("/data/auth.json")
 
     async with async_playwright() as p:
+        print("[INFO] Lanzando Chromium...", flush=True)
+
         browser = await p.chromium.launch(
-            headless=False,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
+            headless=False,   # 🔴 NO CAMBIAR (IDERMA LO NECESITA)
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
         )
-        context = await browser.new_context()
+
+        # =========================
+        # CONTEXTO CON / SIN SESIÓN
+        # =========================
+        if AUTH_PATH.exists():
+            print("[INFO] Cargando sesión desde auth.json", flush=True)
+            context = await browser.new_context(
+                storage_state=str(AUTH_PATH)
+            )
+        else:
+            print("[INFO] No hay auth.json, creando contexto limpio", flush=True)
+            context = await browser.new_context()
+
         page = await context.new_page()
 
+        # =========================
+        # VERIFICAR SESIÓN
+        # =========================
         sesion_valida = await verificar_sesion(page)
 
         if not sesion_valida:
+            print("[INFO] Sesión no válida, haciendo login...", flush=True)
+
             await login(
                 page,
                 USER,
                 PASS,
-                "https://control.iderma.es/07/LOGIN/default.cfm"
+                "https://control.iderma.es/07/LOGIN/default.cfm",
             )
 
-        # 🔴 SIEMPRE FORZAR _STAGE ANTES DE SEGUIR
+            # 🔴 CRÍTICO: comprobar que salimos de LOGIN
+            await page.wait_for_timeout(2000)
+            print("[DEBUG] URL tras login:", page.url, flush=True)
+
+            if "login" in page.url.lower():
+                raise RuntimeError(
+                    "Login rechazado por Iderma: seguimos en LOGIN tras submit"
+                )
+
+            # 🔴 GUARDAR SESIÓN VÁLIDA
+            await context.storage_state(path=str(AUTH_PATH))
+            print("[INFO] Sesión guardada en /data/auth.json", flush=True)
+
+        # =========================
+        # ENTRAR AL STAGE REAL
+        # =========================
+        print("[INFO] Entrando a STAGE...", flush=True)
         await page.goto("https://control.iderma.es/07/_STAGE/default.cfm")
         await page.wait_for_load_state("networkidle")
 
-        print(f"[DEBUG] URL antes de descargar_agenda: {page.url}", flush=True)
+        print(
+            "[DEBUG] URL antes de descargar_agenda:",
+            page.url,
+            flush=True,
+        )
 
-        # 🔴 SEGURIDAD EXTRA
         if "login" in page.url.lower():
-            raise RuntimeError("Seguimos en LOGIN después del login. Sesión rota.")
+            raise RuntimeError(
+                "Seguimos en LOGIN después del login. Sesión rota."
+            )
 
+        # =========================
+        # DESCARGA + PIPELINE
+        # =========================
         ruta_archivo, fecha_objetivo = await descargar_agenda(page)
-
 
         await browser.close()
 
-    sabino_df, bori_df, _, _ = transformar_y_generar_csv(ruta_archivo, fecha_objetivo)
+    # =========================
+    # TRANSFORMACIÓN + RESPOND.IO
+    # =========================
+    sabino_df, bori_df, _, _ = transformar_y_generar_csv(
+        ruta_archivo,
+        fecha_objetivo,
+    )
 
-    # ====== SUBIDA RESPOND.IO (COMO ANTES) ======
     if sabino_df is not None and not sabino_df.empty:
-        await subir_contactos_dataframe(sabino_df, "sabino", concurrencia=5)
+        print("[INFO] Subiendo contactos SABINO...", flush=True)
+        await subir_contactos_dataframe(
+            sabino_df,
+            "sabino",
+            concurrencia=5,
+        )
 
     if bori_df is not None and not bori_df.empty:
-        await subir_contactos_dataframe(bori_df, "bori", concurrencia=5)
+        print("[INFO] Subiendo contactos BORI...", flush=True)
+        await subir_contactos_dataframe(
+            bori_df,
+            "bori",
+            concurrencia=5,
+        )
+
+    print(">>> MAIN FINALIZADO CORRECTAMENTE <<<", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
