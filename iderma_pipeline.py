@@ -209,6 +209,15 @@ def corregir_miercoles(texto):
     texto = texto.replace("Mie©rcoles", "Miercoles")
     return texto
 
+async def esperar_frame(page, name, timeout=15000):
+    for _ in range(int(timeout / 500)):
+        frame = page.frame(name=name)
+        if frame:
+            return frame
+        await page.wait_for_timeout(500)
+    raise RuntimeError(f"No apareció el frame: {name}")
+
+
 # ======================================================
 # LOGIN IDERMA
 # ======================================================
@@ -262,8 +271,9 @@ async def descargar_agenda(page):
     print(f"Usando fecha final: {fecha.strftime('%Y-%m-%d')}")
     print(f"Nombre final del archivo: {nombre_archivo}")
 
-    frame_top = page.frame(name="frTop")
+    frame_top = await esperar_frame(page, "frTop")
     await frame_top.wait_for_selector("#SITE")
+
     await frame_top.select_option("#SITE", label="intranet.iderma.es")
 
     frame_menu = page.frame(name="frMenu")
