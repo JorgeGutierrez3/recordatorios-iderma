@@ -19,6 +19,15 @@ try:
 except locale.Error:
     pass
 
+async def esperar_frame(page, name, timeout=15000):
+    for _ in range(int(timeout / 500)):
+        frame = page.frame(name=name)
+        if frame:
+            return frame
+        await page.wait_for_timeout(500)
+    raise RuntimeError(f"No apareció el frame: {name}")
+
+
 # ======================================================
 # LISTAS ESPAÑOL (NO DEPENDEN DEL LOCALE)
 # ======================================================
@@ -309,8 +318,8 @@ async def verificar_sesion(page):
     if "login" in page.url.lower():
         print("Sesión no válida.")
         return False
-
-    frame_top = page.frame(name="frTop")
+    
+    frame_top = await esperar_frame(page, "frTop")
     if frame_top:
         try:
             await frame_top.wait_for_selector("#SITE", timeout=4000)
@@ -342,19 +351,20 @@ async def descargar_agenda(page):
     print(f"Usando fecha final: {fecha.strftime('%Y-%m-%d')}")
     print(f"Nombre final del archivo: {nombre_archivo}")
 
-    frame_top = page.frame(name="frTop")
+    frame_top = await esperar_frame(page, "frTop")
     await frame_top.wait_for_selector("#SITE")
+
     await frame_top.select_option("#SITE", label="intranet.iderma.es")
 
-    frame_menu = page.frame(name="frMenu")
+    frame_menu = await esperar_frame(page, "frMenu")
     await frame_menu.wait_for_selector("a.btn:has-text('Listados y Reports')")
     await frame_menu.click("a.btn:has-text('Listados y Reports')")
 
-    frame_sub = page.frame(name="frSubmenu")
+    frame_sub = await esperar_frame(page, "frSubmenu")
     await frame_sub.wait_for_selector("a.btn.btn-info.btn-submenu:has-text('Agenda programada')")
     await frame_sub.click("a.btn.btn-info.btn-submenu:has-text('Agenda programada')")
 
-    frame_center = page.frame(name="frCenter")
+    frame_center = await esperar_frame(page, "frCenter")
     await frame_center.wait_for_selector("form#form_agenda_list")
 
     await frame_center.fill("input[name='fechafin']", fecha.strftime("%Y-%m-%d"))
