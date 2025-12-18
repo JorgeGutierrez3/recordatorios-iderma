@@ -19,15 +19,6 @@ try:
 except locale.Error:
     pass
 
-async def esperar_frame(page, name, timeout=8000):
-    end = asyncio.get_event_loop().time() + timeout / 1000
-    while asyncio.get_event_loop().time() < end:
-        frame = page.frame(name=name)
-        if frame:
-            return frame
-        await asyncio.sleep(0.2)
-    raise RuntimeError(f"No apareció el frame: {name} | URL actual: {page.url}")
-
 # ======================================================
 # LISTAS ESPAÑOL (NO DEPENDEN DEL LOCALE)
 # ======================================================
@@ -66,10 +57,6 @@ TOKENS = {
     "cdc":    _require_env("RESPONDIO_TOKEN_CDC"),
     "rey":    _require_env("RESPONDIO_TOKEN_REY"),
 }
-
-USER = _require_env("IDERM_USER")
-PASS = _require_env("IDERM_PASS")
-
 
 def authenticate(token: str) -> dict:
     return {
@@ -245,7 +232,7 @@ async def subir_contactos_dataframe(df: pd.DataFrame, workspace: str, concurrenc
             print(f"Detalle: {e['detail']}")
 
     print("==============================")
-    # ====== ACTUALIZAR id_pac EN TODOS LOS CONTACTOS SUBIDOS ======
+
     await actualizar_id_pac_en_batch(results_ok, workspace, concurrencia)
 
 
@@ -318,8 +305,8 @@ async def verificar_sesion(page):
     if "login" in page.url.lower():
         print("Sesión no válida.")
         return False
-    
-    frame_top = await esperar_frame(page, "frTop")
+
+    frame_top = page.frame(name="frTop")
     if frame_top:
         try:
             await frame_top.wait_for_selector("#SITE", timeout=4000)
@@ -351,20 +338,19 @@ async def descargar_agenda(page):
     print(f"Usando fecha final: {fecha.strftime('%Y-%m-%d')}")
     print(f"Nombre final del archivo: {nombre_archivo}")
 
-    frame_top = await esperar_frame(page, "frTop")
+    frame_top = page.frame(name="frTop")
     await frame_top.wait_for_selector("#SITE")
-
     await frame_top.select_option("#SITE", label="intranet.iderma.es")
 
-    frame_menu = await esperar_frame(page, "frMenu")
+    frame_menu = page.frame(name="frMenu")
     await frame_menu.wait_for_selector("a.btn:has-text('Listados y Reports')")
     await frame_menu.click("a.btn:has-text('Listados y Reports')")
 
-    frame_sub = await esperar_frame(page, "frSubmenu")
+    frame_sub = page.frame(name="frSubmenu")
     await frame_sub.wait_for_selector("a.btn.btn-info.btn-submenu:has-text('Agenda programada')")
     await frame_sub.click("a.btn.btn-info.btn-submenu:has-text('Agenda programada')")
 
-    frame_center = await esperar_frame(page, "frCenter")
+    frame_center = page.frame(name="frCenter")
     await frame_center.wait_for_selector("form#form_agenda_list")
 
     await frame_center.fill("input[name='fechafin']", fecha.strftime("%Y-%m-%d"))
@@ -509,125 +495,32 @@ def transformar_y_generar_csv(ruta_archivo: Path, fecha_objetivo: date):
 # MAIN
 # ======================================================
 async def main():
-    import os
-    from pathlib import Path
-
-    print(">>> MAIN ARRANCADO <<<", flush=True)
-
-    # =========================
-    # CREDENCIALES DESDE .env
-    # =========================
-    USER = os.getenv("IDERM_USER")
-    PASS = os.getenv("IDERM_PASS")
-
-    if not USER or not PASS:
-        raise RuntimeError("Faltan IDERM_USER o IDERM_PASS en el .env")
-
-    AUTH_PATH = Path("/data/auth.json")
+    USER = "alfredo@grupomedsum.com"
+    PASS = "2410.01.kld"
 
     async with async_playwright() as p:
-        print("[INFO] Lanzando Chromium...", flush=True)
-
         browser = await p.chromium.launch(
-            headless=False,   # 🔴 NO CAMBIAR (IDERMA LO NECESITA)
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
+            headless=False,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
-
-        # =========================
-        # CONTEXTO CON / SIN SESIÓN
-        # =========================
-        if AUTH_PATH.exists():
-            print("[INFO] Cargando sesión desde auth.json", flush=True)
-            context = await browser.new_context(
-                storage_state=str(AUTH_PATH)
-            )
-        else:
-            print("[INFO] No hay auth.json, creando contexto limpio", flush=True)
-            context = await browser.new_context()
-
+        context = await browser.new_context()
         page = await context.new_page()
 
-        # =========================
-        # VERIFICAR SESIÓN
-        # =========================
         sesion_valida = await verificar_sesion(page)
-
         if not sesion_valida:
-            print("[INFO] Sesión no válida, haciendo login...", flush=True)
+            await login(page, USER, PASS, "https://control.iderma.es/07/LOGIN/default.cfm")
 
-            await login(
-                page,
-                USER,
-                PASS,
-                "https://control.iderma.es/07/LOGIN/default.cfm",
-            )
-
-            # 🔴 CRÍTICO: comprobar que salimos de LOGIN
-            await page.wait_for_timeout(2000)
-            print("[DEBUG] URL tras login:", page.url, flush=True)
-
-            if "login" in page.url.lower():
-                raise RuntimeError(
-                    "Login rechazado por Iderma: seguimos en LOGIN tras submit"
-                )
-
-            # 🔴 GUARDAR SESIÓN VÁLIDA
-            await context.storage_state(path=str(AUTH_PATH))
-            print("[INFO] Sesión guardada en /data/auth.json", flush=True)
-
-        # =========================
-        # ENTRAR AL STAGE REAL
-        # =========================
-        print("[INFO] Entrando a STAGE...", flush=True)
-        await page.goto("https://control.iderma.es/07/_STAGE/default.cfm")
-        await page.wait_for_load_state("networkidle")
-
-        print(
-            "[DEBUG] URL antes de descargar_agenda:",
-            page.url,
-            flush=True,
-        )
-
-        if "login" in page.url.lower():
-            raise RuntimeError(
-                "Seguimos en LOGIN después del login. Sesión rota."
-            )
-
-        # =========================
-        # DESCARGA + PIPELINE
-        # =========================
         ruta_archivo, fecha_objetivo = await descargar_agenda(page)
-
         await browser.close()
 
-    # =========================
-    # TRANSFORMACIÓN + RESPOND.IO
-    # =========================
-    sabino_df, bori_df, _, _ = transformar_y_generar_csv(
-        ruta_archivo,
-        fecha_objetivo,
-    )
+    sabino_df, bori_df, _, _ = transformar_y_generar_csv(ruta_archivo, fecha_objetivo)
 
+    # ====== SUBIDA RESPOND.IO (COMO ANTES) ======
     if sabino_df is not None and not sabino_df.empty:
-        print("[INFO] Subiendo contactos SABINO...", flush=True)
-        await subir_contactos_dataframe(
-            sabino_df,
-            "sabino",
-            concurrencia=5,
-        )
+        await subir_contactos_dataframe(sabino_df, "sabino", concurrencia=5)
 
     if bori_df is not None and not bori_df.empty:
-        print("[INFO] Subiendo contactos BORI...", flush=True)
-        await subir_contactos_dataframe(
-            bori_df,
-            "bori",
-            concurrencia=5,
-        )
-
-    print(">>> MAIN FINALIZADO CORRECTAMENTE <<<", flush=True)
+        await subir_contactos_dataframe(bori_df, "bori", concurrencia=5)
 
 if __name__ == "__main__":
     asyncio.run(main())
