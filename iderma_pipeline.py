@@ -19,14 +19,14 @@ try:
 except locale.Error:
     pass
 
-async def esperar_frame(page, name, timeout=15000):
-    for _ in range(int(timeout / 500)):
+async def esperar_frame(page, name, timeout=8000):
+    end = asyncio.get_event_loop().time() + timeout / 1000
+    while asyncio.get_event_loop().time() < end:
         frame = page.frame(name=name)
         if frame:
             return frame
-        await page.wait_for_timeout(500)
-    raise RuntimeError(f"No apareció el frame: {name}")
-
+        await asyncio.sleep(0.2)
+    raise RuntimeError(f"No apareció el frame: {name} | URL actual: {page.url}")
 
 # ======================================================
 # LISTAS ESPAÑOL (NO DEPENDEN DEL LOCALE)
@@ -519,8 +519,12 @@ async def main():
         page = await context.new_page()
 
         sesion_valida = await verificar_sesion(page)
+
         if not sesion_valida:
             await login(page, USER, PASS, "https://control.iderma.es/07/LOGIN/default.cfm")
+            await page.goto("https://control.iderma.es/07/_STAGE/default.cfm")
+            await page.wait_for_load_state("networkidle")
+        print(f"[DEBUG] URL antes de descargar_agenda: {page.url}", flush=True)
 
         ruta_archivo, fecha_objetivo = await descargar_agenda(page)
         await browser.close()
