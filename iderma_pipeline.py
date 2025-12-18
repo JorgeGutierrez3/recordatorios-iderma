@@ -521,16 +521,25 @@ async def main():
         sesion_valida = await verificar_sesion(page)
 
         if not sesion_valida:
-            await login(page, USER, PASS, "https://control.iderma.es/07/LOGIN/default.cfm")
+            await login(
+                page,
+                USER,
+                PASS,
+                "https://control.iderma.es/07/LOGIN/default.cfm"
+            )
 
-            # 🔴 ESTE PASO ES CRÍTICO
-            await page.goto("https://control.iderma.es/07/_STAGE/default.cfm")
-            await page.wait_for_load_state("networkidle")
+        # 🔴 SIEMPRE FORZAR _STAGE ANTES DE SEGUIR
+        await page.goto("https://control.iderma.es/07/_STAGE/default.cfm")
+        await page.wait_for_load_state("networkidle")
 
-        # DEBUG REAL
         print(f"[DEBUG] URL antes de descargar_agenda: {page.url}", flush=True)
 
+        # 🔴 SEGURIDAD EXTRA
+        if "login" in page.url.lower():
+            raise RuntimeError("Seguimos en LOGIN después del login. Sesión rota.")
+
         ruta_archivo, fecha_objetivo = await descargar_agenda(page)
+
 
         await browser.close()
 
